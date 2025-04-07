@@ -397,10 +397,10 @@ func print(
 	writeLn(
 		w,
 		"|  "+
-			addCellHeader("raw", stats.count)+
-			addCellHeader("swapped", stats.countSwapped)+
-			addCellHeader("removed", stats.countRemoved)+
-			addCellHeader("both", stats.countBoth)+
+			addCellHeader("raw", stats.count.Value())+
+			addCellHeader("swapped", stats.countSwapped.Value())+
+			addCellHeader("removed", stats.count.Value()-stats.countRemoved.Value())+
+			addCellHeader("both", stats.countBoth.Value())+
 			"|",
 	)
 	writeLn(w, "|---|---|---|---|---|")
@@ -409,10 +409,10 @@ func print(
 		writeLn(
 			w,
 			fmt.Sprintf("| %d ", i)+
-				addCellUnit(i, u)+
-				addCellUnit(i, s)+
-				addCellUnit(i, r)+
-				addCellUnit(i, b)+
+				addCellUnit(i, u, stats.count.Value())+
+				addCellUnit(i, s, stats.countSwapped.Value())+
+				addCellUnit(i, r, stats.count.Value()-stats.countRemoved.Value())+
+				addCellUnit(i, b, stats.countBoth.Value())+
 				"|",
 		)
 	}
@@ -442,14 +442,15 @@ func writeLn(
 
 func addCellHeader(
 	title string,
-	count *xsync.Counter,
+	total int64,
 ) string {
-	return fmt.Sprintf("| %s (%d) ", title, count.Value())
+	return fmt.Sprintf("| %s (%d) ", title, total)
 }
 
 func addCellUnit(
 	i int,
 	sl []unit,
+	total int64,
 ) string {
 	if len(sl) <= i {
 		return "|  "
@@ -457,5 +458,10 @@ func addCellUnit(
 
 	u := sl[i]
 
-	return fmt.Sprintf("| %s (%d) ", u.v, u.n)
+	return fmt.Sprintf(
+		"| %s (%d, %.2f%%) ",
+		u.v,
+		u.n,
+		(float64(u.n)/float64(total))*100,
+	)
 }
