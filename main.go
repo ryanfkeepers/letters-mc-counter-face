@@ -112,9 +112,13 @@ func makeStats() stats {
 	}
 }
 
+type nGramSwap struct {
+	from, to string
+}
+
 type handler struct {
 	removeWords map[string]struct{}
-	swapNGrams  map[string]string
+	swapNGrams  []nGramSwap
 	words       stats
 	letters     stats
 }
@@ -122,7 +126,7 @@ type handler struct {
 func newHandler() *handler {
 	return &handler{
 		removeWords: map[string]struct{}{},
-		swapNGrams:  map[string]string{},
+		swapNGrams:  []nGramSwap{},
 		words:       makeStats(),
 		letters:     makeStats(),
 	}
@@ -142,7 +146,10 @@ func (h *handler) parseFlags() error {
 				With("input", swap)
 		}
 
-		h.swapNGrams[parts[0]] = parts[1]
+		h.swapNGrams = append(h.swapNGrams, nGramSwap{
+			from: parts[0],
+			to:   parts[1],
+		})
 	}
 
 	for _, remove := range flagValRemove {
@@ -244,6 +251,9 @@ func (h *handler) processFile(
 		curr, currBroken = normalize(scanner.Text())
 	}
 
+	// and one last call to catch the final line
+	h.processLine(ctx, curr)
+
 	return nil
 }
 
@@ -280,10 +290,8 @@ func (h *handler) processLine(
 		// swapped characters
 		swapped := word
 
-		// should probably use a slice for swapNGrams, not a map
-		// for ordering consistency.
-		for from, to := range h.swapNGrams {
-			swapped = strings.ReplaceAll(word, from, to)
+		for _, swap := range h.swapNGrams {
+			swapped = strings.ReplaceAll(word, swap.from, swap.to)
 		}
 
 		_, remove := h.removeWords[word]
@@ -368,8 +376,8 @@ func print(
 ) {
 	var (
 		u = toUnitSlice(stats.universal)
-		s = toUnitSlice(stats.swapped)
 		r = toUnitSlice(stats.removed)
+		s = toUnitSlice(stats.swapped)
 		b = toUnitSlice(stats.both)
 	)
 
@@ -378,12 +386,12 @@ func print(
 			u = u[:top]
 		}
 
-		if len(s) > top {
-			s = s[:top]
-		}
-
 		if len(r) > top {
 			r = r[:top]
+		}
+
+		if len(s) > top {
+			s = s[:top]
 		}
 
 		if len(b) > top {
@@ -398,8 +406,8 @@ func print(
 		w,
 		"|  "+
 			addCellHeader("raw", stats.count.Value())+
-			addCellHeader("swapped", stats.countSwapped.Value())+
 			addCellHeader("removed", stats.count.Value()-stats.countRemoved.Value())+
+			addCellHeader("swapped", stats.countSwapped.Value())+
 			addCellHeader("both", stats.countBoth.Value())+
 			"|",
 	)
@@ -408,10 +416,10 @@ func print(
 	for i := range longest {
 		writeLn(
 			w,
-			fmt.Sprintf("| %d ", i)+
+			fmt.Sprintf("| %2d ", i)+
 				addCellUnit(i, u, stats.count.Value())+
-				addCellUnit(i, s, stats.countSwapped.Value())+
 				addCellUnit(i, r, stats.count.Value()-stats.countRemoved.Value())+
+				addCellUnit(i, s, stats.countSwapped.Value())+
 				addCellUnit(i, b, stats.countBoth.Value())+
 				"|",
 		)
@@ -427,7 +435,12 @@ func toUnitSlice(counter *xsync.Map[string, *xsync.Counter]) []unit {
 	})
 
 	slices.SortFunc(result, func(a, b unit) int {
-		return b.n - a.n
+		diff := b.n - a.n
+		if diff != 0 {
+			return diff
+		}
+
+		return strings.Compare(a.v, b.v)
 	})
 
 	return result
@@ -459,7 +472,7 @@ func addCellUnit(
 	u := sl[i]
 
 	return fmt.Sprintf(
-		"| %s (%d, %.2f%%) ",
+		"| %5s (%6d, %2.2f%%) ",
 		u.v,
 		u.n,
 		(float64(u.n)/float64(total))*100,
