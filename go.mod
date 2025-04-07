@@ -1,9 +1,12 @@
 module github.com/ryanfkeepers/letters-mc-counter-face
 
-go 1.23.6
+go 1.24
+
+toolchain go1.24.2
 
 require (
 	github.com/alcionai/clues v0.0.0-20250404152412-611c8b8e1eb5
+	github.com/puzpuzpuz/xsync/v4 v4.0.0
 	github.com/spf13/cobra v1.9.1
 )
 

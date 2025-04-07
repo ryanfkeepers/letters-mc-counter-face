@@ -3,12 +3,16 @@ package main
 import (
 	"bufio"
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/alcionai/clues/clog"
 	"github.com/alcionai/clues/cluerr"
+	"github.com/puzpuzpuz/xsync/v4"
 	"github.com/spf13/cobra"
 )
 
@@ -28,7 +32,17 @@ and word slicing (ex: ignore all "the").
 
 Accepts a list of filepaths to .txt files as arguments.
 
-Example: count -sswapNgram=th,ð -removeWord=the ~/corpus/alice_in_wonderland.txt`,
+Example: count -swapNgram=th,ð -removeWord=the ~/corpus/alice_in_wonderland.txt
+
+Caveats:
+
+As a simplification, assumes swaps always maintain the same
+count of letters in a word, or reduces them.  Increasing the
+letter count (ex: -s=e,ea) will cause stats issues in the 
+forth letters column.
+
+Currently strips all non-ascii characters during the alpha-
+numeric corpus normalization.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: h.run,
 	}
@@ -68,29 +82,33 @@ func main() {
 }
 
 type stats struct {
-	// universal count of the tracked thing
-	count        int
-	countRemoved int
-
 	// all text stats with no modifications
-	complete map[string]int
+	count     *xsync.Counter
+	universal *xsync.Map[string, *xsync.Counter]
 
 	// text stats with only swapped parts
-	swapped map[string]int
+	countSwapped *xsync.Counter
+	swapped      *xsync.Map[string, *xsync.Counter]
 
 	// text stats with only removed parts
-	removed map[string]int
+	countRemoved *xsync.Counter
+	removed      *xsync.Map[string, *xsync.Counter]
 
 	// text stats with both swapped and removed parts.
-	both map[string]int
+	countBoth *xsync.Counter
+	both      *xsync.Map[string, *xsync.Counter]
 }
 
 func makeStats() stats {
 	return stats{
-		complete: map[string]int{},
-		swapped:  map[string]int{},
-		removed:  map[string]int{},
-		both:     map[string]int{},
+		count:        xsync.NewCounter(),
+		universal:    xsync.NewMap[string, *xsync.Counter](),
+		countSwapped: xsync.NewCounter(),
+		swapped:      xsync.NewMap[string, *xsync.Counter](),
+		countRemoved: xsync.NewCounter(),
+		removed:      xsync.NewMap[string, *xsync.Counter](),
+		countBoth:    xsync.NewCounter(),
+		both:         xsync.NewMap[string, *xsync.Counter](),
 	}
 }
 
@@ -159,6 +177,12 @@ func (h *handler) run(cmd *cobra.Command, args []string) error {
 			return cluerr.Wrap(err, "executing command")
 		}
 	}
+
+	print(h.words, "words", 10, os.Stdout)
+
+	fmt.Println(" ")
+
+	print(h.letters, "letters", 0, os.Stdout)
 
 	return nil
 }
@@ -253,25 +277,26 @@ func (h *handler) processLine(
 	ln []string,
 ) {
 	for _, word := range ln {
-		// universal set
-		h.words.count++
-		h.words.complete[word] = h.words.complete[word] + 1
-
 		// swapped characters
 		swapped := word
 
+		// should probably use a slice for swapNGrams, not a map
+		// for ordering consistency.
 		for from, to := range h.swapNGrams {
 			swapped = strings.ReplaceAll(word, from, to)
 		}
 
 		_, remove := h.removeWords[word]
 
+		// count all words
 		inc(&h.words, word, swapped, remove)
 
+		// count all characters in the raw word
 		for _, char := range word {
 			inc(&h.letters, string(char), "", remove)
 		}
 
+		// count all characters in the swapped wordset
 		for _, char := range swapped {
 			inc(&h.letters, "", string(char), remove)
 		}
@@ -285,25 +310,152 @@ func inc(
 	removed bool,
 ) {
 	if len(raw) > 0 {
-		// only counting raw additions prevent double
+		// only counting raw additions prevents double
 		// counting of characters.
-		stats.count++
-		stats.complete[raw] = stats.complete[raw] + 1
+		stats.count.Inc()
+		incX(stats.universal, raw)
+
+		if !removed {
+			incX(stats.removed, raw)
+		} else {
+			// only counting raw additions prevents double
+			// counting of characters.
+			stats.countRemoved.Inc()
+		}
+
 	}
 
 	if len(swapped) > 0 {
-		stats.swapped[swapped] = stats.swapped[swapped] + 1
+		stats.countSwapped.Inc()
+		incX(stats.swapped, swapped)
+
+		if !removed {
+			stats.countBoth.Inc()
+			incX(stats.both, swapped)
+		}
+	}
+}
+
+// incX ensures the xsync count is populated and incs
+// the given key.
+func incX(
+	m *xsync.Map[string, *xsync.Counter],
+	k string,
+) {
+	if len(k) == 0 {
+		return
 	}
 
-	if removed {
-		if len(raw) > 0 {
-			// only counting raw additions prevent double
-			// counting of characters.
-			stats.countRemoved++
+	v, ok := m.Load(k)
+	if !ok {
+		v = xsync.NewCounter()
+		m.Store(k, v)
+	}
+
+	v.Inc()
+}
+
+type unit struct {
+	v string
+	n int
+}
+
+func print(
+	stats stats,
+	title string,
+	top int,
+	w io.Writer,
+) {
+	var (
+		u = toUnitSlice(stats.universal)
+		s = toUnitSlice(stats.swapped)
+		r = toUnitSlice(stats.removed)
+		b = toUnitSlice(stats.both)
+	)
+
+	if top > 0 {
+		if len(u) > top {
+			u = u[:top]
 		}
-	} else {
-		if len(swapped) > 0 {
-			stats.both[swapped] = stats.both[swapped] + 1
+
+		if len(s) > top {
+			s = s[:top]
+		}
+
+		if len(r) > top {
+			r = r[:top]
+		}
+
+		if len(b) > top {
+			b = b[:top]
 		}
 	}
+
+	longest := max(len(u), len(s), len(r), len(b))
+
+	writeLn(w, title)
+	writeLn(
+		w,
+		"|  "+
+			addCellHeader("raw", stats.count)+
+			addCellHeader("swapped", stats.countSwapped)+
+			addCellHeader("removed", stats.countRemoved)+
+			addCellHeader("both", stats.countBoth)+
+			"|",
+	)
+	writeLn(w, "|---|---|---|---|---|")
+
+	for i := range longest {
+		writeLn(
+			w,
+			fmt.Sprintf("| %d ", i)+
+				addCellUnit(i, u)+
+				addCellUnit(i, s)+
+				addCellUnit(i, r)+
+				addCellUnit(i, b)+
+				"|",
+		)
+	}
+}
+
+func toUnitSlice(counter *xsync.Map[string, *xsync.Counter]) []unit {
+	result := []unit{}
+
+	counter.Range(func(key string, value *xsync.Counter) bool {
+		result = append(result, unit{key, int(value.Value())})
+		return true
+	})
+
+	slices.SortFunc(result, func(a, b unit) int {
+		return b.n - a.n
+	})
+
+	return result
+}
+
+func writeLn(
+	w io.Writer,
+	ln string,
+) {
+	fmt.Fprint(w, ln+"\n")
+}
+
+func addCellHeader(
+	title string,
+	count *xsync.Counter,
+) string {
+	return fmt.Sprintf("| %s (%d) ", title, count.Value())
+}
+
+func addCellUnit(
+	i int,
+	sl []unit,
+) string {
+	if len(sl) <= i {
+		return "|  "
+	}
+
+	u := sl[i]
+
+	return fmt.Sprintf("| %s (%d) ", u.v, u.n)
 }
