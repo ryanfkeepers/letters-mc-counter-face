@@ -12,6 +12,7 @@ import (
 
 	"github.com/alcionai/clues/clog"
 	"github.com/alcionai/clues/cluerr"
+	"github.com/pawelszydlo/humanize"
 	"github.com/puzpuzpuz/xsync/v4"
 	"github.com/spf13/cobra"
 )
@@ -457,7 +458,7 @@ func addCellHeader(
 	title string,
 	total int64,
 ) string {
-	return fmt.Sprintf("| %s (%d) ", title, total)
+	return fmt.Sprintf("| %s (%s) ", title, human(total))
 }
 
 func addCellUnit(
@@ -472,9 +473,18 @@ func addCellUnit(
 	u := sl[i]
 
 	return fmt.Sprintf(
-		"| %5s (%6d, %2.2f%%) ",
+		"| %5s (%6s, %2.2f%%) ",
 		u.v,
-		u.n,
+		human(u.n),
 		(float64(u.n)/float64(total))*100,
 	)
+}
+
+type inter interface {
+	int | int64
+}
+
+func human[Z inter](z Z) string {
+	hzr, _ := humanize.New("en")
+	return hzr.SiPrefixFast(float64(z))
 }

@@ -6,6 +6,7 @@ toolchain go1.24.2
 
 require (
 	github.com/alcionai/clues v0.0.0-20250404152412-611c8b8e1eb5
+	github.com/pawelszydlo/humanize v0.0.0-20200522003854-142c3fe71478
 	github.com/puzpuzpuz/xsync/v4 v4.0.0
 	github.com/spf13/cobra v1.9.1
 )
