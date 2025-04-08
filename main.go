@@ -18,8 +18,9 @@ import (
 )
 
 var (
-	flagValSwap   []string
-	flagValRemove []string
+	flagValSwap       []string
+	flagValRemove     []string
+	flagValRemoveHTML bool
 )
 
 func newRoot(h *handler) *cobra.Command {
@@ -43,7 +44,11 @@ letter count (ex: -s=e,ea) will cause stats issues in the
 forth letters column.
 
 Currently strips all non-ascii characters during the alpha-
-numeric corpus normalization.`,
+numeric corpus normalization.
+
+The RemoveHTML flag is a low-effort attempt and assumes all
+words beginning or ending in angle brackets (<>) can be removed.
+This is, of course, faulty.  But sufficient for simple use cases.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: h.run,
 	}
@@ -64,6 +69,14 @@ numeric corpus normalization.`,
 		"r",
 		[]string{},
 		"a comma separated list of words to remove entirely.  ex -r=the",
+	)
+
+	flags.BoolVarP(
+		&flagValRemoveHTML,
+		"removeHTML",
+		"w",
+		false,
+		"removes any words that might be part of an html element. ex -removeHTML",
 	)
 
 	return root
@@ -120,6 +133,7 @@ type nGramSwap struct {
 type handler struct {
 	removeWords map[string]struct{}
 	swapNGrams  []nGramSwap
+	removeHTML  bool
 	words       stats
 	letters     stats
 }
@@ -128,6 +142,7 @@ func newHandler() *handler {
 	return &handler{
 		removeWords: map[string]struct{}{},
 		swapNGrams:  []nGramSwap{},
+		removeHTML:  false,
 		words:       makeStats(),
 		letters:     makeStats(),
 	}
@@ -156,6 +171,8 @@ func (h *handler) parseFlags() error {
 	for _, remove := range flagValRemove {
 		h.removeWords[remove] = struct{}{}
 	}
+
+	h.removeHTML = flagValRemoveHTML
 
 	return nil
 }
@@ -249,7 +266,7 @@ func (h *handler) processFile(
 
 		prev = curr
 		prevBroken = currBroken
-		curr, currBroken = normalize(scanner.Text())
+		curr, currBroken = normalize(scanner.Text(), h.removeHTML)
 	}
 
 	// and one last call to catch the final line
@@ -258,10 +275,17 @@ func (h *handler) processFile(
 	return nil
 }
 
-var keepCharsRE = regexp.MustCompile(`[^a-zA-Z0-9 ]+`)
+var (
+	keepCharsRE          = regexp.MustCompile(`[^a-zA-Z0-9 ]+`)
+	keepCharsAndAnglesRE = regexp.MustCompile(`[^a-zA-Z0-9 <>]+`)
+	removeHTMLRE         = regexp.MustCompile(` ?</?[a-zA-Z0-9]+> ?`)
+)
 
 // lowers and strips most non-alpha-numeric characters.
-func normalize(ln string) (
+func normalize(
+	ln string,
+	removeHTML bool,
+) (
 	[]string, // the revised text
 	bool, // whether the original text ended in a dash-broken word.
 ) {
@@ -278,6 +302,13 @@ func normalize(ln string) (
 
 	ln = strings.ToLower(ln)
 	ln = strings.TrimSpace(ln)
+
+	if removeHTML {
+		// prereduction makes it easier to isolate html elements
+		ln = keepCharsAndAnglesRE.ReplaceAllString(ln, "")
+		ln = removeHTMLRE.ReplaceAllString(ln, "")
+	}
+
 	ln = keepCharsRE.ReplaceAllString(ln, "")
 
 	return strings.Fields(ln), broken
